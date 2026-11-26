@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AdaptiveStream Studio v2.0 — HTML5 MPEG-DASH &amp; ABR QoE</title>
+  <script src="https://cdn.dashjs.org/latest/dash.all.min.js" defer></script>
+  <style>
+    :root {
+      --bg: #090d1a; --panel: #11182b; --panel-2: #18223d; --border: #273558;
+      --text: #e8eeff; --muted: #93a4cc; --accent: #38bdf8; --indigo: #6366f1; --ok: #22c55e;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); }
+    header { display: flex; justify-content: space-between; align-items: center; padding: 12px 22px; background: var(--panel); border-bottom: 1px solid var(--border); }
+    .brand { font-weight: 700; font-size: 1.08rem; display: flex; align-items: center; gap: 10px; }
+    .badge { background: linear-gradient(135deg, var(--accent), var(--indigo)); color: #061020; padding: 2px 8px; border-radius: 6px; font-size: 0.75rem; font-weight: 800; }
+    .wrap { max-width: 1280px; margin: 0 auto; padding: 18px 22px; display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+    .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+    .full { grid-column: 1 / -1; }
+    h3 { margin: 0 0 10px 0; font-size: 0.86rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+    video { width: 100%; border-radius: 8px; background: #000; border: 1px solid var(--border); }
+    input, select, button {
+      background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+      border-radius: 8px; padding: 8px 12px; font-size: 0.86rem;
+    }
+    button { cursor: pointer; font-weight: 600; }
+    button.primary { background: linear-gradient(135deg, var(--indigo), #4f46e5); border-color: transparent; color: #fff; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+    .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-bottom: 12px; }
+    .kpi { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 10px; }
+    .kpi .v { font-size: 1.3rem; font-weight: 700; }
+    .kpi .l { font-size: 0.75rem; color: var(--muted); }
+    canvas { width: 100%; height: 240px; background: #070b15; border: 1px solid var(--border); border-radius: 8px; display: block; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.84rem; }
+    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+    th { background: var(--panel-2); color: var(--muted); }
+    @media (max-width: 920px) { .wrap { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span>AdaptiveStream Studio</span>
+      <span class="badge">HTML5 DASH + ABR v2.0</span>
+    </div>
+    <a href="/docs" target="_blank" style="color: var(--accent); text-decoration: none; font-size: 0.86rem;">API Docs ↗</a>
+  </header>
+
+  <div class="wrap">
+    <div class="card">
+      <h3>Live HTML5 MPEG-DASH Player</h3>
+      <div class="row">
+        <input id="mpdUrl" value="https://dash.akamaized.net/akamai/bbb_30fps/bbb_30fps.mpd" style="flex:1;" />
+        <button id="btnLoadStream" class="primary">Load MPD</button>
+      </div>
+      <video id="videoPlayer" controls></video>
+      <div id="playerStatus" style="font-size:0.8rem;color:var(--muted);margin-top:8px;">Ready to load MPEG-DASH manifest.</div>
+    </div>
+
+    <div class="card">
+      <h3>ABR Policy &amp; Network Trace Simulator</h3>
+      <div class="row">
+        <select id="algoSelect">
+          {% for a in algorithms %}
+          <option value="{{ a }}">{{ a }}</option>
+          {% endfor %}
+        </select>
+        <select id="traceSelect">
+          {% for t in traces %}
+          <option value="{{ t }}">{{ t }}</option>
+          {% endfor %}
+        </select>
+        <button id="btnSim" class="primary">Simulate Playback</button>
+      </div>
+      <div class="kpis">
+        <div class="kpi"><div class="v" id="kQoe">—</div><div class="l">QoE Score</div></div>
+        <div class="kpi"><div class="v" id="kBitrate">—</div><div class="l">Avg Bitrate</div></div>
+        <div class="kpi"><div class="v" id="kStall">—</div><div class="l">Total Stall</div></div>
+        <div class="kpi"><div class="v" id="kSwitches">—</div><div class="l">Switches</div></div>
+      </div>
+      <canvas id="abrChart" width="600" height="240"></canvas>
+    </div>
+
+    <div class="card full">
+      <h3>Continuous Improvement QoE Benchmark History</h3>
+      <div id="benchTable">Loading...</div>
+    </div>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let dashPlayer = null;
+
+    $("btnLoadStream").addEventListener("click", () => {
+      const url = $("mpdUrl").value.trim();
+      const video = $("videoPlayer");
+      if (typeof dashjs !== "undefined" && dashjs.MediaPlayer) {
+        if (!dashPlayer) {
+          dashPlayer = dashjs.MediaPlayer().create();
+          dashPlayer.initialize(video, url, true);
+        } else {
+          dashPlayer.attachSource(url);
+        }
+        $("playerStatus").textContent = `Streaming via dash.js: ${url}`;
+      } else {
+        $("playerStatus").textContent = "dash.js CDN unavailable offline; use the ABR Simulator on the right.";
+      }
+    });
+
+    function drawAbrChart(timeline) {
+      const c = $("abrChart");
+      const ctx = c.getContext("2d");
+      const W = c.width, H = c.height, pad = 22;
+      ctx.clearRect(0, 0, W, H);
+      if (!timeline.length) return;
+      const maxBw = Math.max(...timeline.map((p) => Math.max(p.network_kbps, p.selected_kbps)), 1000);
+      const plotW = W - 2 * pad, plotH = H - 2 * pad;
+
+      const drawLine = (key, color, dashed) => {
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.setLineDash(dashed ? [5, 4] : []);
+        ctx.beginPath();
+        timeline.forEach((pt, i) => {
+          const x = pad + (i / Math.max(1, timeline.length - 1)) * plotW;
+          const y = pad + (1 - pt[key] / maxBw) * plotH;
+          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+      };
+      drawLine("network_kbps", "rgba(56, 189, 248, 0.55)", true);
+      drawLine("selected_kbps", "#6366f1", false);
+      ctx.setLineDash([]);
+    }
+
+    async function runSim() {
+      const res = await fetch("/api/simulate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          algorithm: $("algoSelect").value,
+          trace: $("traceSelect").value,
+          n_segments: 60,
+        }),
+      });
+      const d = await res.json();
+      $("kQoe").textContent = d.qoe_score;
+      $("kBitrate").textContent = `${d.avg_bitrate_kbps} kbps`;
+      $("kStall").textContent = `${d.total_stall_s} s`;
+      $("kSwitches").textContent = d.bitrate_switches;
+      drawAbrChart(d.timeline);
+    }
+
+    async function loadBenchmarks() {
+      const res = await fetch("/api/benchmarks");
+      const data = await res.json();
+      if (!data.runs.length) {
+        $("benchTable").innerHTML = "No benchmark runs recorded yet.";
+        return;
+      }
+      const latest = data.runs[data.runs.length - 1];
+      $("benchTable").innerHTML = `
+        <p style="font-size:0.84rem;color:var(--muted);">Latest run: <strong>${latest.timestamp}</strong> · Best ABR: <strong>${latest.best_algorithm}</strong> (Mean QoE = <strong>${latest.best_mean_qoe}</strong>)</p>
+        <table>
+          <thead><tr><th>Algorithm</th><th>Mean QoE</th><th>Avg Bitrate (kbps)</th><th>Avg Stall (s)</th><th>Avg Switches</th></tr></thead>
+          <tbody>
+            ${latest.results.map((r) => `<tr><td><strong>${r.algorithm}</strong></td><td><strong>${r.mean_qoe}</strong></td><td>${r.avg_bitrate_kbps}</td><td>${r.avg_stall_s}</td><td>${r.avg_switches}</td></tr>`).join("")}
+          </tbody>
+        </table>
+      `;
+    }
+
+    $("btnSim").addEventListener("click", runSim);
+    runSim();
+    loadBenchmarks();
+  </script>
+</body>
+</html>
